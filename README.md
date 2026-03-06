@@ -48,7 +48,7 @@ Ce script Python a pour but de nettoyer et d'archiver l'historique des conversat
 Pour lancer le script manuellement :
 
 ```bash
-python3 clean-geminy.py
+python3 clean-i.py
 ```
 
 ## Automatisation (macOS)
@@ -57,7 +57,7 @@ Pour exécuter le script automatiquement (par exemple, toutes les heures), vous 
 
 1.  **Adapter le fichier de configuration :**
     -   Renommez `clean-gemini.plist.example` en `com.user.cleangemini.plist`.
-    -   Ouvrez ce fichier et **remplacez les chemins placeholders** par les chemins absolus corrects vers l'interpréteur Python de votre environnement virtuel et vers le script `clean-geminy.py`.
+    -   Ouvrez ce fichier et **remplacez les chemins placeholders** par les chemins absolus corrects vers l'interpréteur Python de votre environnement virtuel et vers le script `clean-gemini.py`.
 
 2.  **Installer l'agent :**
     -   Copiez le fichier `.plist` dans le dossier des agents `launchd` de votre utilisateur.

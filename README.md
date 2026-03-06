@@ -48,7 +48,7 @@ Ce script Python a pour but de nettoyer et d'archiver l'historique des conversat
 Pour lancer le script manuellement :
 
 ```bash
-python3 clean-i.py
+python3 clean-gemini.py
 ```
 
 ## Automatisation (macOS)

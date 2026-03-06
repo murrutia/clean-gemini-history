@@ -1,0 +1,24 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.user.cleangemini</string>
+
+    <key>ProgramArguments</key>
+    <array>
+        <!-- IMPORTANT: Remplacez par le chemin absolu vers le python de votre venv -->
+        <string>/Users/murrutia/src/sandbox/clean-gemini/.venv/bin/python</string>
+        <!-- IMPORTANT: Remplacez par le chemin absolu vers votre script -->
+        <string>/Users/murrutia/src/sandbox/clean-gemini/clean-geminy.py</string>
+    </array>
+
+    <key>StartInterval</key>
+    <integer>3600</integer> <!-- Exécuter toutes les 3600 secondes (1 heure) -->
+
+    <key>StandardErrorPath</key>
+    <string>/tmp/com.user.cleangemini.err</string>
+    <key>StandardOutPath</key>
+    <string>/tmp/com.user.cleangemini.out</string>
+</dict>
+</plist>

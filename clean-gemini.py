@@ -117,13 +117,9 @@ def process_thread_export(thread_data, email):
         if " - " not in md_file.name:
             continue
 
-        parts = md_file.name.split(" - ")
-        file_date = parts[0]
-        # On récupère le titre en enlevant l'extension .md (.stem donne le nom sans extension)
-        # Attention : si le titre contient " - ", on recolle les morceaux sauf la date
-        file_title = " - ".join(parts[1:])[
-            :-3
-        ]  # Fallback manuel car .stem ne gère pas le split
+        # On utilise .stem pour enlever l'extension, et on sépare la date du titre
+        # .split(' - ', 1) est robuste, même si le titre contient des tirets
+        file_date, file_title = md_file.stem.split(" - ", 1)
 
         if file_title == title_cleaned:
             if file_date < update_time_str:
@@ -254,7 +250,7 @@ def main():
     # Finalisation
     full_data["geminiCodeAssist.chatThreads"] = threads_root
 
-    # Décommenter les lignes ci-dessous quand vous êtes prêt à nettoyer la base VS Code
+    # Application de l'update de la base de données
     cursor.execute(
         "UPDATE ItemTable SET value = ? WHERE key = ?", (json.dumps(full_data), KEY)
     )

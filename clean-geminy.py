@@ -5,18 +5,26 @@ import sqlite3
 from datetime import datetime
 from pathlib import Path
 
-from google.genai import Client
-from google.genai.errors import APIError
+from dotenv import load_dotenv
+from google import genai
+from google.genai import errors, types
+
+# Charge les variables d'environnement à partir d'un fichier .env
+# Utile pour charger la clé GEMINI_API_KEY de manière sécurisée.
+load_dotenv()
 
 # --- CONFIGURATION ---
 # Chemin vers la base de données d'état de VS Code
-DB_PATH = Path(
-    "~/Library/Application Support/Code/User/globalStorage/state.vscdb"
+VSCODE_DB_PATH = Path(
+    os.getenv(
+        "VSCODE_DB_PATH",
+        "~/Library/Application Support/Code/User/globalStorage/state.vscdb",
+    )
 ).expanduser()
 
 # Dossier racine de votre coffre Obsidian pour l'archive
 OBSIDIAN_VAULT_PATH = Path(
-    "~/Documents/Cloud.utc.fr/Notes Obsidian/Gemini Archive"
+    os.getenv("OBSIDIAN_VAULT_PATH", "~/Documents/Obsidian_Vault")
 ).expanduser()
 
 # Sous-dossier pour la sauvegarde brute JSON
@@ -66,19 +74,18 @@ def generate_title_with_gemini(client, text: str) -> str | None:
     ---
     {text[:2000]}
     ---
-    Titre :
     """
     try:
         response = client.models.generate_content(
-            model="gemini-1.5-flash-latest",
+            model="gemini-2.5-flash",
             contents=prompt,
-            generation_config={
-                "temperature": 0.0
-            },  # 0.0 pour un résultat stable/déterministe
+            config=types.GenerateContentConfig(
+                temperature=0.0
+            ),  # 0.0 pour un résultat stable/déterministe
         )
         # Nettoyage de la réponse pour enlever d'éventuels guillemets ou markdown
         return response.text.strip().strip('"').strip("'")
-    except APIError as e:
+    except errors.APIError as e:
         print(f"  -> Erreur API Gemini : {e.message}")
         return None
     except Exception as e:
@@ -170,7 +177,7 @@ updated: {thread_data.get('update_time')}
 
 
 def main():
-    if not DB_PATH.exists():
+    if not VSCODE_DB_PATH.exists():
         return
 
     # Initialisation du client Gemini et du cache de titres
@@ -179,7 +186,8 @@ def main():
     if GEMINI_API_KEY:
         try:
             # Le client est créé une seule fois et réutilisé
-            client = Client(api_key=GEMINI_API_KEY)
+            # Il lira automatiquement la variable d'environnement GEMINI_API_KEY
+            client = genai.Client()
         except Exception as e:
             print(f"Erreur lors de l'initialisation du client Gemini : {e}")
     else:
@@ -188,7 +196,7 @@ def main():
             "La génération de titre par IA est ignorée."
         )
 
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(VSCODE_DB_PATH)
     cursor = conn.cursor()
     cursor.execute("SELECT value FROM ItemTable WHERE key = ?", (KEY,))
     row = cursor.fetchone()

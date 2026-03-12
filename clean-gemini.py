@@ -1,7 +1,9 @@
+import argparse
 import json
 import os
 import re
 import sqlite3
+import sys
 from datetime import datetime
 from pathlib import Path
 
@@ -31,6 +33,7 @@ OBSIDIAN_VAULT_PATH = Path(
 JSON_BACKUP_PATH = OBSIDIAN_VAULT_PATH / "raw_json"
 
 KEY = "google.geminicodeassist"
+HISTORY_SIZE_TARGET = 20  # Nombre d'items à viser dans l'historique
 
 # --- CONFIGURATION IA (Optionnel) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
@@ -93,7 +96,75 @@ def generate_title_with_gemini(client, text: str) -> str | None:
         return None
 
 
-def process_thread_export(thread_data, email):
+def repopulate_history_from_archive(
+    current_threads: dict, max_size: int, archive_path: Path, verbose=False
+) -> dict:
+    """
+    Repopule l'historique des threads à partir des archives JSON si le nombre
+    de threads actuel est inférieur à la taille maximale souhaitée.
+    """
+    needed = max_size - len(current_threads)
+    if needed <= 0:
+        return current_threads
+
+    if not archive_path.exists():
+        if verbose:
+            print(
+                f"  -> Le dossier d'archive JSON '{archive_path}' n'existe pas. Impossible de repeupler."
+            )
+        return current_threads
+
+    # 1. Lister et trier les archives JSON par date (plus récent d'abord)
+    # Le nom de fichier est 'YYYY-MM-DD HHhMMmSS - ... .json'
+    archived_files = sorted(archive_path.glob("*.json"), reverse=True)
+
+    if not archived_files:
+        if verbose:
+            print("  -> Aucune archive JSON trouvée pour le repeuplement.")
+        return current_threads
+
+    # 2. On utilise les titres pour vérifier les doublons
+    existing_titles = {data["title"] for data in current_threads.values()}
+
+    added_count = 0
+    if verbose:
+        print(f"  -> Recherche de {needed} item(s) à ré-injecter...")
+
+    # 3. Itérer sur les archives et ajouter les manquants
+    for json_file in archived_files:
+        if added_count >= needed:
+            break
+
+        try:
+            with json_file.open("r", encoding="utf-8") as f:
+                archived_data = json.load(f)
+
+            archived_title = archived_data.get("title")
+            thread_id = archived_data.get("id")
+
+            if not archived_title or not thread_id or archived_title in existing_titles:
+                continue
+
+            current_threads[thread_id] = archived_data
+            existing_titles.add(archived_title)
+            added_count += 1
+            if verbose:
+                print(f"    -> [INJECT] '{archived_title}' (ID: {thread_id})")
+        except (json.JSONDecodeError, IOError) as e:
+            if verbose:
+                print(
+                    f"    -> Erreur en lisant le fichier d'archive {json_file.name}: {e}"
+                )
+
+    if verbose and added_count > 0:
+        print(
+            f"  -> {added_count} item(s) ré-injecté(s). Total final : {len(current_threads)}."
+        )
+
+    return current_threads
+
+
+def process_thread_export(thread_data, email, verbose=False):
     """
     Gère l'export d'un thread :
     1. Vérifie s'il existe déjà une version plus récente ou plus ancienne.
@@ -122,8 +193,14 @@ def process_thread_export(thread_data, email):
         file_date, file_title = md_file.stem.split(" - ", 1)
 
         if file_title == title_cleaned:
-            if file_date < update_time_str:
+            if file_date == update_time_str:
+                if verbose:
+                    print(f"  -> [EXISTE] {title_cleaned} (identique)")
+                return
+            elif file_date < update_time_str:
                 # Le fichier existant est plus vieux : on le supprime pour le remplacer
+                if verbose:
+                    print(f"  -> [MAJ] {title_cleaned} (nouvelle version)")
                 md_file.unlink(missing_ok=True)
                 # On supprime aussi le JSON associé
                 (JSON_BACKUP_PATH / md_file.with_suffix(".json").name).unlink(
@@ -131,6 +208,10 @@ def process_thread_export(thread_data, email):
                 )
             elif file_date > update_time_str:
                 # Le fichier existant est plus récent : on ne fait rien
+                if verbose:
+                    print(
+                        f"  -> [SKIP] {title_cleaned} (version plus récente existante)"
+                    )
                 found_newer = True
             break
 
@@ -139,6 +220,9 @@ def process_thread_export(thread_data, email):
 
     # --- ÉCRITURE DES FICHIERS ---
     base_name = f"{update_time_str} - {title_cleaned}"
+
+    if verbose:
+        print(f"  -> [EXPORT] {base_name}")
 
     # 1. Export Markdown
     md_path = OBSIDIAN_VAULT_PATH / f"{base_name}.md"
@@ -172,7 +256,55 @@ updated: {thread_data.get('update_time')}
             f.write(f"### {role}\n\n{msg.get('markdownText', '')}\n\n---\n\n")
 
 
+def force_vscode_reload(verbose=False):
+    """
+    Tente de forcer le rechargement de la fenêtre VSCode via AppleScript (macOS).
+    Avertissement : Simule une interaction utilisateur et peut être instable.
+    Remarque : ne fonctionne pas comme prévu : la liste de l'historique n'est pas réactualisée dans le logiciel,
+    il faut quand même le fermer et le rouvrir pour voir les changements.
+    """
+    if sys.platform != "darwin":
+        if verbose:
+            print(
+                "\nL'option --reload-vscode est uniquement supportée sur macOS et sera ignorée."
+            )
+        return
+
+    if verbose:
+        print("\nTentative de forcer le rechargement de la fenêtre VSCode...")
+
+    script = """
+    tell application "Visual Studio Code" to activate
+    delay 0.2
+    tell application "System Events"
+        keystroke "p" using {command down, shift down}
+        delay 0.5
+        keystroke "Developer: Reload Window"
+        delay 0.5
+        keystroke return
+    end tell
+    """
+    try:
+        import subprocess
+
+        subprocess.run(["osascript", "-e", script], check=True, capture_output=True)
+    except (subprocess.CalledProcessError, FileNotFoundError) as e:
+        print(f"Échec de l'envoi de la commande de rechargement via AppleScript : {e}")
+
+
 def main():
+    parser = argparse.ArgumentParser(
+        description="Nettoyage et archivage de l'historique Gemini Code Assist."
+    )
+    parser.add_argument("-v", "--verbose", action="store_true", help="Mode verbeux")
+    parser.add_argument(
+        "-r",
+        "--reload-vscode",
+        action="store_true",
+        help="Tenter de forcer le rechargement de la fenêtre VSCode via AppleScript (macOS uniquement).",
+    )
+    args = parser.parse_args()
+
     if not VSCODE_DB_PATH.exists():
         return
 
@@ -207,8 +339,9 @@ def main():
     for email, threads_map in threads_root.items():
         print(f"Traitement de {email}...")
 
-        # clean_threads contiendra la version finale des threads à réécrire dans la DB
-        clean_threads = {}
+        # Dictionnaire pour dédoublonner par titre, en gardant le plus récent
+        # Format: { "titre_nettoyé": {"id": "id_du_thread", "data": {...}} }
+        dedup_threads = {}
 
         for t_id, t_data in list(threads_map.items()):
             original_title = t_data.get("title", "")
@@ -237,13 +370,31 @@ def main():
                 title_cache[canonical_content] = final_title
 
             # 1. Exporter le thread (avec son titre potentiellement nouveau) vers les fichiers
-            process_thread_export(t_data, email)
+            process_thread_export(t_data, email, verbose=args.verbose)
 
-            # 2. Logique de dédoublonnage pour la réécriture dans la base de VS Code
-            if t_data["title"] not in clean_threads or t_data.get(
+            # 2. Logique de dédoublonnage pour la réécriture dans la base de données
+            current_title = t_data["title"]
+            if current_title not in dedup_threads or t_data.get(
                 "update_time", ""
-            ) > clean_threads.get(t_data["title"], {}).get("update_time", ""):
-                clean_threads[t_data["title"]] = t_data
+            ) > dedup_threads[current_title]["data"].get("update_time", ""):
+                dedup_threads[current_title] = {"id": t_id, "data": t_data}
+
+        # Reconstruire la map de threads avec les IDs d'origine pour la DB
+        clean_threads = {item["id"]: item["data"] for item in dedup_threads.values()}
+
+        # 3. Repeupler l'historique depuis l'archive si nécessaire
+        if len(clean_threads) < HISTORY_SIZE_TARGET:
+            if args.verbose:
+                print(
+                    f"\nHistorique actuel ({len(clean_threads)} items) est inférieur à {HISTORY_SIZE_TARGET}. "
+                    "Tentative de repeuplement depuis l'archive."
+                )
+            clean_threads = repopulate_history_from_archive(
+                clean_threads,
+                HISTORY_SIZE_TARGET,
+                JSON_BACKUP_PATH,
+                verbose=args.verbose,
+            )
 
         threads_root[email] = clean_threads
 
@@ -251,15 +402,25 @@ def main():
     full_data["geminiCodeAssist.chatThreads"] = threads_root
 
     # Application de l'update de la base de données
-    cursor.execute(
-        "UPDATE ItemTable SET value = ? WHERE key = ?", (json.dumps(full_data), KEY)
-    )
-    conn.commit()
+    try:
+        cursor.execute(
+            "UPDATE ItemTable SET value = ? WHERE key = ?", (json.dumps(full_data), KEY)
+        )
+        conn.commit()
+    except sqlite3.OperationalError as e:
+        if args.verbose:
+            print(
+                f"Erreur d'accès à la base de données (probablement verrouillée par VS Code) : {e}"
+            )
 
     # Fermeture des connexions
     if client:
         client.close()
     conn.close()
+
+    if args.reload_vscode:
+        force_vscode_reload(verbose=args.verbose)
+
     print("Export et nettoyage terminés.")
 
 

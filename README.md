@@ -33,7 +33,7 @@ Ce script Python a pour but de nettoyer et d'archiver l'historique des conversat
     source .venv/bin/activate
     ```
 
-4.  **Configurer les variables d'environnement**
+3.  **Configurer les variables d'environnement**
 
     Copiez le fichier d'exemple et remplissez-le avec vos informations.
 
@@ -47,9 +47,15 @@ Ce script Python a pour but de nettoyer et d'archiver l'historique des conversat
 
 Pour lancer le script manuellement :
 
-```bash
-python3 clean-gemini.py
-```
+    ```bash
+    # Exécution simple
+    python3 clean-gemini.py
+
+    # Exécution verbeuse avec rechargement de VSCode à la fin
+    python3 clean-gemini.py --verbose --reload-vscode
+    ```
+
+> **Note sur `--reload-vscode`**: Cette option n'est disponible que sur macOS. Elle utilise AppleScript pour simuler l'ouverture de la palette de commandes et l'exécution de "Developer: Reload Window". Elle est utile pour une exécution manuelle mais déconseillée pour une automatisation en arrière-plan.
 
 ## Automatisation (macOS)
 

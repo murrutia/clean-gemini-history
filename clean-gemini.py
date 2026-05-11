@@ -4,6 +4,7 @@ import os
 import re
 import sqlite3
 import sys
+from collections import defaultdict
 from datetime import datetime
 from pathlib import Path
 
@@ -37,6 +38,8 @@ HISTORY_SIZE_TARGET = 20  # Nombre d'items à viser dans l'historique
 
 # --- CONFIGURATION IA (Optionnel) ---
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
+# Liste des modèles Gemini à essayer, du plus performant au plus léger
+GEMINI_MODELS_TO_TRY = ["gemini-2.5-flash", "gemini-2.0-flash", "gemini-2.0-flash-lite"]
 
 
 def clean_filename(title: str) -> str:
@@ -61,10 +64,13 @@ def get_thread_datetime(update_time):
         return datetime.strptime(update_time, "%Y-%m-%dT%H:%M:%SZ")
 
 
-def generate_title_with_gemini(client, text: str) -> str | None:
+def generate_title_with_gemini(
+    client, text: str, models_to_try: list[str]
+) -> str | None:
     """
-    Utilise l'API Gemini pour générer un titre concis et pertinent à partir d'un texte.
-    Retourne le titre sous forme de chaîne, ou None si l'API n'est pas configurée ou échoue.
+    Utilise l'API Gemini pour générer un titre concis et pertinent à partir d'un texte,
+    en essayant plusieurs modèles en cas d'échec.
+    Retourne le titre sous forme de chaîne, ou None si l'API n'est pas configurée ou si tous les modèles échouent.
     """
     if not client:
         return None
@@ -78,21 +84,29 @@ def generate_title_with_gemini(client, text: str) -> str | None:
     {text[:2000]}
     ---
     """
-    try:
-        response = client.models.generate_content(
-            model="gemini-2.5-flash",
-            contents=prompt,
-            config=types.GenerateContentConfig(
-                temperature=0.0
-            ),  # 0.0 pour un résultat stable/déterministe
-        )
-        # Nettoyage de la réponse pour enlever d'éventuels guillemets ou markdown
-        return response.text.strip().strip('"').strip("'")
-    except errors.APIError as e:
-        print(f"  -> Erreur API Gemini : {e.message}")
-        return None
-    except Exception as e:
-        print(f"  -> Erreur inattendue lors de l'appel à Gemini : {e}")
+
+    for model_name in models_to_try:
+        try:
+            print(
+                f"  -> Tentative de génération de titre avec le modèle : {model_name}"
+            )
+            response = client.models.generate_content(
+                model=model_name,
+                contents=prompt,
+                config=types.GenerateContentConfig(
+                    temperature=0.0
+                ),  # 0.0 pour un résultat stable/déterministe
+            )
+            # Nettoyage de la réponse pour enlever d'éventuels guillemets ou markdown
+            return response.text.strip().strip('"').strip("'")
+        except errors.APIError as e:
+            print(f"  -> Erreur API Gemini avec {model_name}: {e.message}")
+            # Continue au prochain modèle dans la liste
+        except Exception as e:
+            print(
+                f"  -> Erreur inattendue lors de l'appel à Gemini avec {model_name}: {e}"
+            )
+            # Continue au prochain modèle dans la liste
         return None
 
 
@@ -337,50 +351,85 @@ def main():
     threads_root = full_data.get("geminiCodeAssist.chatThreads", {})
 
     for email, threads_map in threads_root.items():
-        print(f"Traitement de {email}...")
+        if args.verbose:
+            print(f"\nTraitement de l'utilisateur : {email}...")
+        else:
+            print(f"Traitement de {email}...")
 
-        # Dictionnaire pour dédoublonner par titre, en gardant le plus récent
-        # Format: { "titre_nettoyé": {"id": "id_du_thread", "data": {...}} }
-        dedup_threads = {}
+        # 1. Regrouper les threads par titre canonique pour fusionner les historiques
+        grouped_threads = defaultdict(list)
+        for t_id, t_data in threads_map.items():
+            canonical_title = clean_title(t_data.get("title", "Untitled"))
+            grouped_threads[canonical_title].append((t_id, t_data))
 
-        for t_id, t_data in list(threads_map.items()):
-            original_title = t_data.get("title", "")
-            canonical_content = clean_title(original_title)
+        clean_threads = {}
 
-            if canonical_content in title_cache:
-                # Utiliser le titre déjà généré ou nettoyé depuis le cache
-                t_data["title"] = title_cache[canonical_content]
+        for canonical_title, entries in grouped_threads.items():
+            # Trouver l'entrée la plus récente pour servir de base (master)
+            master_id, master_data = max(
+                entries,
+                key=lambda x: get_thread_datetime(
+                    x[1].get("update_time", "2000-01-01T00:00:00Z")
+                ),
+            )
+
+            # Fusionner les historiques de toutes les versions de ce thread
+            all_messages = []
+            for _, data in entries:
+                all_messages.extend(data.get("history", []))
+
+            # Dédupliquer les messages (clé: timestamp + entité + début du texte)
+            unique_messages = {}
+            for msg in all_messages:
+                msg_key = (
+                    msg.get("create_time"),
+                    msg.get("entity"),
+                    msg.get("markdownText", "")[:100],
+                )
+                if msg_key not in unique_messages:
+                    unique_messages[msg_key] = msg
+
+            # Trier chronologiquement
+            sorted_history = sorted(
+                unique_messages.values(), key=lambda x: x.get("create_time", "")
+            )
+            master_data["history"] = sorted_history
+
+            # 2. Déterminer le titre (IA ou cache)
+            # On se base sur le PREMIER message de l'historique consolidé
+            first_msg_text = (
+                sorted_history[0].get("markdownText", "") if sorted_history else ""
+            )
+
+            # Utilisation d'un cache basé sur le texte du premier message pour éviter de repayer l'IA
+            content_hash = clean_title(first_msg_text[:200])
+
+            if content_hash in title_cache:
+                master_data["title"] = title_cache[content_hash]
             else:
-                final_title = canonical_content
-                # Tenter la génération par IA si le client est dispo et le contenu assez long
-                if client and len(canonical_content.split()) > 10:
-                    print(
-                        f"  -> Génération du titre pour : '{canonical_content[:50]}...'"
+                final_title = canonical_title
+                if client and len(first_msg_text.split()) > 8:
+                    if args.verbose:
+                        print(
+                            f"  -> Génération titre IA pour : '{first_msg_text[:50]}...'"
+                        )  # Ajout de la liste des modèles à essayer
+
+                    generated = generate_title_with_gemini(
+                        client, first_msg_text, GEMINI_MODELS_TO_TRY
                     )
-                    generated_title = generate_title_with_gemini(
-                        client, canonical_content
-                    )
-                    if generated_title:
-                        final_title = generated_title
-                        print(f"  -> Nouveau titre : '{final_title}'")
+                    if generated:
+                        final_title = generated
+                        if args.verbose:
+                            print(f"     => Nouveau titre : '{final_title}'")
 
-                # Mettre à jour le titre dans les données du thread
-                t_data["title"] = final_title
-                # Mettre en cache le résultat (titre généré ou titre nettoyé)
-                title_cache[canonical_content] = final_title
+                master_data["title"] = final_title
+                title_cache[content_hash] = final_title
 
-            # 1. Exporter le thread (avec son titre potentiellement nouveau) vers les fichiers
-            process_thread_export(t_data, email, verbose=args.verbose)
+            # 3. Export vers Obsidian
+            process_thread_export(master_data, email, verbose=args.verbose)
 
-            # 2. Logique de dédoublonnage pour la réécriture dans la base de données
-            current_title = t_data["title"]
-            if current_title not in dedup_threads or t_data.get(
-                "update_time", ""
-            ) > dedup_threads[current_title]["data"].get("update_time", ""):
-                dedup_threads[current_title] = {"id": t_id, "data": t_data}
-
-        # Reconstruire la map de threads avec les IDs d'origine pour la DB
-        clean_threads = {item["id"]: item["data"] for item in dedup_threads.values()}
+            # 4. Garder pour la base VS Code
+            clean_threads[master_id] = master_data
 
         # 3. Repeupler l'historique depuis l'archive si nécessaire
         if len(clean_threads) < HISTORY_SIZE_TARGET:
